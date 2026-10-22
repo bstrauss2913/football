@@ -37,7 +37,7 @@ Arguments:
 - `--week`: NFL week 1–18; defaults to the current week reported by ESPN's scoreboard.
 - `--type`: `PPR` (default), `standard`, or `half PPR` (also accepts `0.5 PPR` and `.5 PPR`). Case-insensitive.
 
-The script reads public FantasyPros weekly projection and ranking pages directly, so it does not need a FantasyPros API key. It also displays the ESPN schedule matchup and applies a small adjustment to the projection when ESPN supplies betting-implied team scoring for that game. The comparison score gives 70% weight to relative adjusted projections and 30% to relative expert rank. A higher score is a recommendation aid, not a certainty. Public pages can change their HTML layout, which may require updating the parser.
+The script uses ESPN's public fantasy player-data endpoint for weekly projections, player names, injuries, and positional rankings, so it does not need a FantasyPros API key. It also displays the ESPN schedule matchup and applies a small adjustment to the projection when ESPN supplies betting-implied team scoring for that game. The comparison score gives 70% weight to relative adjusted projections and 30% to relative ESPN positional rank. A higher score is a recommendation aid, not a certainty. ESPN projection availability can vary by week and scoring format.
 
 The usual fantasy defense position is `D` or `DST`. FantasyPros does not reliably publish weekly player projections for `HC`; the script reports this if that position is selected.
 
@@ -65,8 +65,7 @@ This script builds simple team Elo ratings from completed games in earlier weeks
 
 ## Data sources
 
-- [FantasyPros weekly projections](https://www.fantasypros.com/nfl/projections/rb.php) — public stat projections by position and scoring format.
-- [FantasyPros weekly Flex rankings](https://www.fantasypros.com/nfl/fantasy-football-rankings/weekly-flex.php) — expert consensus rankings.
+- [ESPN public fantasy data](https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/2026/segments/0/leaguedefaults/3?view=kona_player_info) — weekly projections, player metadata, and ranking data. No ESPN account or FantasyPros API key is required.
 - [ESPN NFL scoreboard API](https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard) — current schedule, results, and available game odds.
 - [ESPN NFL injuries](https://site.api.espn.com/apis/site/v2/sports/football/nfl/injuries) — current league-wide injury report used by game predictions.
 

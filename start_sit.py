@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """
-Compare fantasy football starters using FantasyPros projections/rankings and ESPN matchups
+Compare fantasy football starters using ESPN projections/rankings and NFL matchups
 Run from the repository root: python start_sit.py
 """
 
 from __future__ import annotations
 import argparse
 import difflib
-import html
 import json
 import re
 import sys
@@ -17,11 +16,12 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 ESPN_SCOREBOARD = "https://site.api.espn.com/apis/site/v2/sports/football/nfl/scoreboard"
-FANTASYPROS_BASE = "https://www.fantasypros.com/nfl"
+ESPN_FANTASY_BASE = "https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons"
 POSITIONS = {"WR": "WR", "TE": "TE", "RB": "RB", "QB": "QB", "FLEX": "FLX", "K": "K", "D": "DST", "DST": "DST", "HC": "HC"}
 SCORING = {"PPR": "PPR", "STANDARD": "STD", "HALF PPR": "HALF", "0.5 PPR": "HALF", ".5 PPR": "HALF"}
-POSITION_SLUGS = {"WR": "wr", "TE": "te", "RB": "rb", "QB": "qb", "K": "k", "DST": "dst"}
-TEAM_CODES = {"ARI", "ATL", "BAL", "BUF", "CAR", "CHI", "CIN", "CLE", "DAL", "DEN", "DET", "GB", "HOU", "IND", "JAX", "KC", "LAC", "LAR", "LV", "MIA", "MIN", "NE", "NO", "NYG", "NYJ", "PHI", "PIT", "SEA", "SF", "TB", "TEN", "WAS", "WSH"}
+ESPN_TEAM_CODES = {1: "ATL", 2: "BUF", 3: "CHI", 4: "CIN", 5: "CLE", 6: "DAL", 7: "DEN", 8: "DET", 9: "GB", 10: "TEN", 11: "IND", 12: "KC", 13: "LV", 14: "LAR", 15: "MIA", 16: "MIN", 17: "NE", 18: "NO", 19: "NYG", 20: "NYJ", 21: "PHI", 22: "ARI", 23: "PIT", 24: "LAC", 25: "SF", 26: "SEA", 27: "TB", 28: "WAS", 29: "CAR", 30: "JAX", 33: "BAL", 34: "HOU"}
+ESPN_POSITION_CODES = {1: "QB", 2: "RB", 3: "WR", 4: "TE", 5: "K", 16: "DST"}
+ESPN_SCORING_IDS = {"STD": 1, "HALF": 4, "PPR": 3}
 
 def season_year(today: date | None = None) -> int:
     """
@@ -104,141 +104,61 @@ def get_games(season: int, week: int) -> list[dict]:
         games.append({"home": home.get("team", {}).get("abbreviation", ""), "away": away.get("team", {}).get("abbreviation", ""), "date": event.get("date", ""), "name": event.get("name", ""), "home_total": home_total, "away_total": away_total})
     return games
 
-def get_text(url: str) -> str:
+def espn_fantasy_players(season: int, week: int, scoring: str) -> list[dict]:
     """
-    Fetch a web page as text
+    Fetch weekly player projections and rankings from ESPN's public fantasy data
 
     Args:
-        url: str -- page URL
-
-    Returns:
-        str -- decoded page content
-    """
-    request = Request(url, headers={"User-Agent": "Mozilla/5.0 (compatible; football-tools/1.0)"})
-    try:
-        with urlopen(request, timeout=20) as response:
-            return response.read().decode("utf-8", errors="replace")
-    except (HTTPError, URLError, TimeoutError) as exc:
-        raise RuntimeError(f"Could not retrieve page {url}: {exc}") from exc
-
-def parse_table_rows(page: str) -> list[list[dict[str, str]]]:
-    """
-    Extract table rows and cell markup from a web page
-
-    Args:
-        page: str -- HTML page content
-
-    Returns:
-        list[list[dict[str, str]]] -- table rows with raw and readable cell content
-    """
-    rows = []
-    for row_html in re.findall(r"<tr\b[^>]*>(.*?)</tr>", page, flags=re.IGNORECASE | re.DOTALL):
-        cells = re.findall(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", row_html, flags=re.IGNORECASE | re.DOTALL)
-        row = []
-        for cell in cells:
-            text = re.sub(r"<[^>]+>", " ", cell)
-            text = re.sub(r"\s+", " ", html.unescape(text)).strip()
-            row.append({"raw": cell, "text": text})
-        if row:
-            rows.append(row)
-    return rows
-
-def player_label(raw_html: str, cell_text: str) -> tuple[str, str, str]:
-    """
-    Read a player name, team, and position from a table cell
-
-    Args:
-        raw_html: str -- original player cell markup
-        cell_text: str -- readable player cell content
-
-    Returns:
-        tuple[str, str, str] -- player name, NFL team abbreviation, and position
-    """
-    clean_text = re.sub(r"\s+", " ", cell_text.replace("Image:", " ")).strip()
-    attrs = re.findall(r"\b(?:title|alt)\s*=\s*['\"]([^'\"]+)['\"]", raw_html, flags=re.IGNORECASE)
-    candidates = [html.unescape(item).replace("Image:", "").strip() for item in attrs]
-    name = next((item for item in candidates if len(item.split()) >= 2 and not re.search(r"\b[A-Z]\.", item)), "")
-    tokens = clean_text.split()
-    position = tokens[-1].upper() if tokens and tokens[-1].upper() in {"QB", "RB", "WR", "TE", "K", "DST", "HC"} else ""
-    if position:
-        tokens.pop()
-    team = tokens[-1].upper() if tokens and tokens[-1].upper() in TEAM_CODES else ""
-    if team:
-        tokens.pop()
-    if not name:
-        name = " ".join(tokens)
-        name = re.sub(r"^(?:[A-Z]\.\s+)+", "", name)
-    return name.strip(), team, position
-
-def fantasypros_page(kind: str, position: str, week: int, scoring: str) -> str:
-    """
-    Build a public FantasyPros page URL
-
-    Args:
-        kind: str -- page type named projections or rankings
-        position: str -- fantasy position identifier
+        season: int -- NFL season year
         week: int -- NFL week number
-        scoring: str -- scoring format identifier
+        scoring: str -- ESPN scoring identifier STD, HALF, or PPR
 
     Returns:
-        str -- FantasyPros page URL
+        list[dict] -- normalized players with projections and positional rankings
     """
-    if kind == "rankings" and position == "FLX":
-        path = f"{FANTASYPROS_BASE}/fantasy-football-rankings/weekly-flex.php"
-    else:
-        slug = POSITION_SLUGS.get(position)
-        if not slug:
-            raise RuntimeError(f"FantasyPros does not publish weekly {position} projections and rankings")
-        section = "projections" if kind == "projections" else "rankings"
-        path = f"{FANTASYPROS_BASE}/{section}/{slug}.php"
-    params = {"week": week, "scoring": scoring}
-    if kind == "rankings" and position != "FLX":
-        params["type"] = "weekly"
-    return f"{path}?{urlencode(params)}"
-
-def fantasypros_players(kind: str, position: str, week: int, scoring: str) -> list[dict]:
-    """
-    Read weekly player projections or rankings from a public FantasyPros page
-
-    Args:
-        kind: str -- page type named projections or rankings
-        position: str -- fantasy position identifier
-        week: int -- NFL week number
-        scoring: str -- scoring format identifier
-
-    Returns:
-        list[dict] -- normalized player projection or ranking records
-    """
-    positions = ["RB", "WR", "TE"] if kind == "projections" and position == "FLX" else [position]
-    combined = []
-    for item_position in positions:
-        url = fantasypros_page(kind, item_position, week, scoring)
-        page = get_text(url)
-        for row in parse_table_rows(page):
-            if kind == "projections":
-                if len(row) < 3 or "player" in row[0]["text"].casefold():
-                    continue
-                name, team, row_position = player_label(row[0]["raw"], row[0]["text"])
-                numbers = []
-                for cell in row[1:]:
-                    match = re.search(r"-?\d+(?:\.\d+)?", cell["text"].replace(",", ""))
-                    numbers.append(float(match.group(0)) if match else None)
-                if name and numbers and numbers[-1] is not None:
-                    combined.append({"player_name": name, "team": team, "position_id": row_position or item_position, "points": numbers[-1]})
-            else:
-                if len(row) < 3:
-                    continue
-                try:
-                    rank_match = re.search(r"\d+(?:\.\d+)?", row[0]["text"])
-                    rank = float(rank_match.group(0)) if rank_match else None
-                except ValueError:
-                    rank = None
-                name, team, row_position = player_label(row[1]["raw"], row[1]["text"])
-                if name and rank is not None:
-                    combined.append({"player_name": name, "team": team, "position_id": row_position, "rank_ecr": rank})
-    if not combined:
-        raise RuntimeError("No player rows were found on the FantasyPros pages; the site layout may have changed")
-    return combined
+    scoring_id = ESPN_SCORING_IDS.get(scoring)
+    if scoring_id is None:
+        raise RuntimeError(f"ESPN scoring preset is not configured for {scoring}.")
+    url = f"{ESPN_FANTASY_BASE}/{season}/segments/0/leaguedefaults/{scoring_id}?{urlencode({'view': 'kona_player_info', 'scoringPeriodId': week})}"
+    player_filter = {
+        "players": {
+            "filterActive": {"value": True},
+            "filterRanksForScoringPeriodIds": {"value": [week]},
+            "limit": 3000,
+            "sortPercOwned": {"sortPriority": 1, "sortAsc": False},
+        }
+    }
+    data = get_json(url, headers={"X-Fantasy-Filter": json.dumps(player_filter)})
+    results = []
+    for entry in data.get("players", []):
+        player = entry.get("player", {})
+        player_stats = player.get("stats") or (entry.get("playerPoolEntry") or {}).get("stats", [])
+        projection = next((stat for stat in player_stats if stat.get("seasonId") == season and stat.get("scoringPeriodId") == week and stat.get("statSourceId") == 1 and stat.get("statSplitTypeId") == 1), None)
+        if projection is None:
+            continue
+        try:
+            points = float(projection.get("appliedTotal"))
+        except (TypeError, ValueError):
+            continue
+        position_id = ESPN_POSITION_CODES.get(player.get("defaultPositionId"), "")
+        weekly_rankings = (player.get("rankings") or entry.get("rankings") or {}).get(str(week), [])
+        ranking_type = {"PPR": "PPR", "STD": "STANDARD", "HALF": "HALF_PPR"}[scoring]
+        rank_values = [float(rank["rank"]) for rank in weekly_rankings if rank.get("rankType") == ranking_type and rank.get("rank") is not None and (rank.get("slotId") == {"QB": 0, "RB": 2, "WR": 4, "TE": 6, "K": 17, "DST": 16}.get(position_id, rank.get("slotId")))]
+        if not rank_values:
+            ratings = entry.get("ratings") or {}
+            rank_values = [float(item["positionalRanking"]) for item in ratings.values() if item.get("positionalRanking")]
+        rank = sum(rank_values) / len(rank_values) if rank_values else None
+        results.append({
+            "player_name": player.get("fullName") or player.get("name") or "",
+            "team": ESPN_TEAM_CODES.get(player.get("proTeamId"), ""),
+            "position_id": position_id,
+            "points": points,
+            "rank_ecr": rank,
+            "injury_status": player.get("injuryStatus", "ACTIVE"),
+        })
+    if not results:
+        raise RuntimeError(f"ESPN returned no weekly projections for {season} Week {week} ({scoring}). The week may not be published yet.")
+    return results
 
 def clean_name(value: str) -> str:
     """
@@ -349,8 +269,7 @@ def main(players: str | None = None, position: str | None = None, week: int | No
         selected_week = args.week or week or get_week(season)
         if not 1 <= selected_week <= 18:
             parser.error("Week must be from 1 to 18.")
-        projections = fantasypros_players("projections", position, selected_week, scoring)
-        rankings = fantasypros_players("rankings", position, selected_week, scoring)
+        player_data = espn_fantasy_players(season, selected_week, scoring)
         games = get_games(season, selected_week)
     except RuntimeError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -360,12 +279,13 @@ def main(players: str | None = None, position: str | None = None, week: int | No
     results = []
     for name in names:
         try:
-            projection = choose_player(name, projections)
-            rank = choose_player(name, rankings)
+            projection = choose_player(name, player_data)
+            if position != "FLX" and projection.get("position_id") != position:
+                raise ValueError(f"{projection['player_name']} is listed as {projection.get('position_id')}, not {pos_key}.")
             points = get_projection_points(projection, scoring)
             if points is None:
                 raise ValueError(f"No {scoring} projection was returned for {name}.")
-            rank_num = rank.get("rank_ecr") or rank.get("rank_ave") or rank.get("rank")
+            rank_num = projection.get("rank_ecr")
             try:
                 rank_num = float(rank_num)
             except (TypeError, ValueError):
@@ -383,26 +303,31 @@ def main(players: str | None = None, position: str | None = None, week: int | No
         print("No entered players could be matched to both a projection and ranking.", file=sys.stderr)
         return 1
     max_points = max((x["adjusted"] for x in results), default=0) or 1
-    max_rank = max((x["rank"] or len(rankings) or 1 for x in results), default=1)
+    position_rank_max = {
+        player_position: max((row["rank_ecr"] for row in player_data if row["position_id"] == player_position and row.get("rank_ecr")), default=1)
+        for player_position in {row["position_id"] for row in player_data}
+    }
     for item in results:
         model_score = max(0.0, min(100.0, 100 * item["adjusted"] / max_points))
-        rank_score = 100 * (1 - ((item["rank"] or max_rank) - 1) / max(max_rank, 1))
+        max_rank = position_rank_max.get(item["position"], 1)
+        rank_score = 100 * (1 - ((item["rank"] or max_rank) - 1) / max(max_rank - 1, 1))
+        rank_score = max(0.0, min(100.0, rank_score))
         item["score"] = 0.7 * model_score + 0.3 * rank_score
     results.sort(key=lambda x: x["score"], reverse=True)
     print(f"\nWeek {selected_week} | {season} | {scoring} scoring | Position: {pos_key}\n")
-    print(f"{'Player':25} {'Pos':4} {'Opp':18} {'Proj':>7} {'Adj':>7} {'ECR':>6} {'Score':>7}")
+    print(f"{'Player':25} {'Pos':4} {'Opp':18} {'Proj':>7} {'Adj':>7} {'Rank':>6} {'Score':>7}")
     print("-" * 73)
     for x in results:
         rank = f"{x['rank']:.0f}" if x["rank"] is not None else "—"
         print(f"{x['name'][:25]:25} {x['position'][:4]:4} {x['matchup'][:18]:18} {x['points']:7.1f} {x['adjusted']:7.1f} {rank:>6} {x['score']:7.1f}")
     print(f"\nRecommendation: Start {results[0]['name']} (highest blended comparison score).")
-    print("Score blends 70% relative FantasyPros projections (with a small ESPN odds-based team scoring adjustment) and 30% relative expert consensus rank; it is a comparison aid, not a guaranteed outcome.")
+    print("Score blends 70% relative ESPN weekly projections (with a small ESPN odds-based team scoring adjustment) and 30% relative ESPN positional rank; it is a comparison aid, not a guaranteed outcome.")
     return 0
 
 if __name__ == "__main__":
     raise SystemExit(main(
-        players="Rachaad White, JK Dobbins",
-        position="Flex",
+        players="Dak Prescott, Patrick Mahomes",
+        position="QB",
         week=7,
         scoring="PPR",
     ))
