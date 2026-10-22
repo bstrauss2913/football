@@ -140,6 +140,11 @@ def espn_fantasy_players(season: int, week: int, scoring: str) -> list[dict]:
             points = float(projection.get("appliedTotal"))
         except (TypeError, ValueError):
             continue
+        season_projection = next((stat for stat in player_stats if stat.get("seasonId") == season and stat.get("statSourceId") == 1 and stat.get("statSplitTypeId") == 0), None)
+        try:
+            season_points = float(season_projection.get("appliedTotal")) if season_projection else None
+        except (TypeError, ValueError):
+            season_points = None
         position_id = ESPN_POSITION_CODES.get(player.get("defaultPositionId"), "")
         weekly_rankings = (player.get("rankings") or entry.get("rankings") or {}).get(str(week), [])
         ranking_type = {"PPR": "PPR", "STD": "STANDARD", "HALF": "HALF_PPR"}[scoring]
@@ -149,13 +154,34 @@ def espn_fantasy_players(season: int, week: int, scoring: str) -> list[dict]:
             rank_values = [float(item["positionalRanking"]) for item in ratings.values() if item.get("positionalRanking")]
         rank = sum(rank_values) / len(rank_values) if rank_values else None
         results.append({
+            "player_id": player.get("id"),
             "player_name": player.get("fullName") or player.get("name") or "",
             "team": ESPN_TEAM_CODES.get(player.get("proTeamId"), ""),
             "position_id": position_id,
             "points": points,
+            "season_points": season_points,
             "rank_ecr": rank,
             "injury_status": player.get("injuryStatus", "ACTIVE"),
         })
+    season_url = f"{ESPN_FANTASY_BASE}/{season}/segments/0/leaguedefaults/{scoring_id}?{urlencode({'view': 'kona_player_info', 'scoringPeriodId': 0})}"
+    try:
+        season_data = get_json(season_url, headers={"X-Fantasy-Filter": json.dumps(player_filter)})
+    except RuntimeError:
+        season_data = {}
+    season_projections = {}
+    for entry in season_data.get("players", []):
+        player = entry.get("player", {})
+        player_stats = player.get("stats") or (entry.get("playerPoolEntry") or {}).get("stats", [])
+        projection = next((stat for stat in player_stats if stat.get("seasonId") == season and stat.get("scoringPeriodId") == 0 and stat.get("statSourceId") == 1 and stat.get("statSplitTypeId") == 0), None)
+        if projection is None or player.get("id") is None:
+            continue
+        try:
+            season_projections[player["id"]] = float(projection.get("appliedTotal"))
+        except (TypeError, ValueError):
+            continue
+    for row in results:
+        if row.get("player_id") in season_projections:
+            row["season_points"] = season_projections[row["player_id"]]
     if not results:
         raise RuntimeError(f"ESPN returned no weekly projections for {season} Week {week} ({scoring}). The week may not be published yet.")
     return results
@@ -326,8 +352,8 @@ def main(players: str | None = None, position: str | None = None, week: int | No
 
 if __name__ == "__main__":
     raise SystemExit(main(
-        players="Dak Prescott, Patrick Mahomes",
-        position="QB",
+        players="Tyler Higbee, TJ Hockenson, Kenyon Sadiq, Marvin Harrison Jr, Emanuel Wilson, Konata Mumpfield, Kendre Miller, Rome Odunze",
+        position="Flex",
         week=7,
         scoring="PPR",
     ))
