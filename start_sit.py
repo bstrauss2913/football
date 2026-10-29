@@ -352,8 +352,8 @@ def main(players: str | None = None, position: str | None = None, week: int | No
 
 if __name__ == "__main__":
     raise SystemExit(main(
-        players="Tyler Higbee, TJ Hockenson, Kenyon Sadiq, Marvin Harrison Jr, Emanuel Wilson, Konata Mumpfield, Kendre Miller, Rome Odunze",
+        players="Rhamondre Stevenson, Jalen Coker, Tony Pollard, AJ Brown",
         position="Flex",
-        week=7,
+        week=8,
         scoring="PPR",
     ))

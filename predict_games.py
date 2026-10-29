@@ -276,5 +276,5 @@ def main(week: int | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(
-        week=7,
+        week=8
     ))
